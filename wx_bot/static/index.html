@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>会玩GPT</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked@3.0.8/marked.min.js"></script>
+    <link href="https://cdn.bootcss.com/highlight.js/8.0/styles/monokai_sublime.min.css" rel="stylesheet">
+    <script src="https://cdn.bootcss.com/highlight.js/8.0/highlight.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script>hljs.initHighlightingOnLoad();</script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+        }
+
+        #chat-container {
+            width: 95%;
+            margin: 20px auto;
+            padding: 20px;
+            box-shadow: 1px 1px 5px rgba(0, 0, 0, 0.1);
+            overflow-y: auto;
+        }
+
+        .message {
+            padding: 10px;
+            margin-bottom: 15px;
+            background-color: #f1f1f1;
+            border-radius: 5px;
+        }
+
+        pre>code {
+            display: block;
+            padding: 10px;
+            margin: 10px 0;
+            background-color: #333;
+            border-radius: 5px;
+            overflow-y: auto;
+            color: #FFF;
+            font-family: Menlo, monospace;
+            font-size: small;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="chat-container">让答案再飞一会～</div>
+    <script>
+        $(document).ready(function () {
+            var url = window.location.href;
+            console.log(url)
+            var searchParams = new URLSearchParams(new URL(url).search);
+            var queryKey = searchParams.get('key');
+            console.log(queryKey)
+            $.ajax({
+                url: '/api/wechat/gpt',
+                method: 'POST',
+                data: {
+                    key: queryKey,
+                },
+                success: function (response) {
+                    var rendererMD = new marked.Renderer();
+                    marked.setOptions({
+                        renderer: rendererMD,
+                        gfm: true,
+                        tables: true,
+                        breaks: false,
+                        pedantic: false,
+                        sanitize: false,
+                        smartLists: true,
+                        smartypants: false
+                    });
+                    marked.setOptions({
+                        highlight: function (code) {
+                            return hljs.highlightAuto(code).value;
+                        }
+                    });
+                    const chatContainer = document.getElementById("chat-container");
+                    chatContainer.innerHTML = ''
+                    const messageElement = document.createElement("div");
+                    messageElement.className = "message";
+                    messageElement.innerHTML = window.marked(response);
+                    chatContainer.appendChild(messageElement);
+                },
+                error: function (error) {
+                    console.log('API请求失败:', error);
+                    const chatContainer = document.getElementById("chat-container");
+                    chatContainer.innerHTML = "请求失败了，刷新页面试试"
+                    // 处理API请求失败的逻辑
+                }
+            });
+        })
+    </script>
+</body>
+
+
+</html>
