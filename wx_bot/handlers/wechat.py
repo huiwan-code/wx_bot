@@ -10,7 +10,7 @@ from wechatpy.exceptions import (
     InvalidSignatureException,
     InvalidAppIdException,
 )
-from langchain_text_splitters import CharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from langchain_community.embeddings import QianfanEmbeddingsEndpoint
 from langchain_community.vectorstores import Chroma
@@ -54,8 +54,13 @@ class WechatGptHandlerResource(BaseResource):
 
         answer = chain_response.get("result", "")
         metadatas = []
+        added_sources = []
         for source_document in chain_response.get("source_documents", []):
+            # 过滤掉重复的来源
+            if source_document.metadata.get("source") in added_sources:
+                continue
             metadatas.append(source_document.metadata)
+            added_sources.append(source_document.metadata.get("source"))
         return json.dumps({
             "answer": answer,
             "metadatas": metadatas
@@ -173,10 +178,10 @@ class WechatArticlePostResource(BaseResource):
         if article_data is None:
             return make_response("文章拉取失败", 404)
         # 使用CharTextSplitter对内容进行分割 chunk_size = 1000; chunk_overlap = 300, 按句号分开
-        splitter = CharacterTextSplitter(
-            chunk_size=1000,
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=700,
             chunk_overlap=300,
-            separator='。'
+            separators=['。','，', '']
         )
         docs = splitter.create_documents([article_data['content']], [{'title': article_data['title'], 'source': article_url}])
         
@@ -212,7 +217,6 @@ class WechatArticlePostResource(BaseResource):
         for doc in docs:
             doc_id = hashlib.md5(str(doc.page_content + doc.metadata['source']).encode('utf-8')).hexdigest()
             ids.append(doc_id)
-        
         
         # 存入chroma向量数据库
         Chroma.from_documents(
