@@ -80,8 +80,20 @@
                     chatContainer.innerHTML = ''
                     const messageElement = document.createElement("div");
                     messageElement.className = "message";
-                    messageElement.innerHTML = window.marked(response);
+                    messageElement.innerHTML = window.marked(response.answer);
                     chatContainer.appendChild(messageElement);
+                    // 添加引用信息
+                    const referenceElement = document.createElement("div");
+                    referenceElement.className = "reference";
+                    response.metadatas.forEach(function (item) {
+                        const referenceLink = document.createElement("a");
+                        referenceLink.href = item.source;
+                        referenceLink.textContent = item.title;
+                        referenceLink.target = "_blank";
+                        referenceElement.appendChild(referenceLink);
+                        referenceElement.appendChild(document.createElement("br"));
+                    });
+                    chatContainer.appendChild(referenceElement);
                 },
                 error: function (error) {
                     console.log('API请求失败:', error);

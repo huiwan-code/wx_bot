@@ -1,19 +1,21 @@
-FROM python:3.7-slim
+FROM ohai9/homcloud:4.4.1-python3.12.2-slim-bookworm
 EXPOSE 5000
 
-RUN useradd --create-home wx_bot
+RUN apt update -y && apt install -y --no-install-recommends \
+    g++ \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
-COPY requirements.txt ./
-RUN pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+COPY ./manage.py /app/manage.py
+COPY pyproject.toml /app/pyproject.toml
+COPY ./bin /app/bin
+COPY ./wx_bot /app/wx_bot 
 
-COPY . /app
+RUN pip install pdm
+RUN pdm install
 
-RUN chown -R wx_bot /app
-USER wx_bot
-
-ENV FLASK_ENV production
 RUN ["chmod", "+x", "/app/bin/docker-entrypoint.sh"]
 
 ENTRYPOINT ["/app/bin/docker-entrypoint.sh"]
 CMD ["server"]
-

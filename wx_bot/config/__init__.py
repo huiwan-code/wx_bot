@@ -1,8 +1,17 @@
 # flask-redis
-REDIS_URL = 'redis://:zsggnhs__@43.138.163.25:7856/0'
+REDIS_URL = ''
 
 # 微信公众号相关密钥
-WECHAT_TOKEN = '8a22b76a8c83056475a1a58f20cfa9c7'
-WECHAT_APPID = 'wx5f0b3a5346f4e703'
-WECHAT_SECRET = 'd27d9a235e81fc4bb7319c3cc51c2090'
-WECHAT_AES_KEY = 'LaOEkXirYHkB2OxKQgtSb7q9qDwkl2iGZZsq9fOlmQu'
+WECHAT_TOKEN = ''
+WECHAT_AES_KEY = ''
+
+# QIANFAN
+QIANFAN_AK = ''
+QIANFAN_SK = ''
+
+# OpenAI
+OPENAI_API_KEY = ''
+OPENAI_API_BASE = ''
+
+# DB STORE DIR
+DB_STORE_DIR = 'db/chroma'

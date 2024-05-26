@@ -1,32 +1,30 @@
 import requests
 import uuid
+import hashlib
+import json
+
 from flask import request, abort, make_response,send_from_directory
-from wechatpy import WeChatClient, parse_message, create_reply
+from wechatpy import parse_message, create_reply
 from wechatpy.utils import check_signature
 from wechatpy.exceptions import (
     InvalidSignatureException,
     InvalidAppIdException,
 )
+from langchain_text_splitters import CharacterTextSplitter
+from langchain_core.documents import Document
+from langchain_community.embeddings import QianfanEmbeddingsEndpoint
+from langchain_community.vectorstores import Chroma
+from langchain.chains import RetrievalQA
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate,SystemMessagePromptTemplate,HumanMessagePromptTemplate
 
 from wx_bot.handlers.base import BaseResource
-from wx_bot.handlers import helper
-
 from wx_bot.models import redis
-
-
 from wx_bot import config
 
-WECHAT_TOKEN = config.WECHAT_TOKEN
-WECHAT_APPID = config.WECHAT_APPID
-WECHAT_SECRET = config.WECHAT_SECRET
-WECHAT_AES_KEY = config.WECHAT_AES_KEY
-
-def init_app(app):
-    wechat_appid = app.config.get('WECHAT_APPID', '')
-    wechat_secret = app.config.get('WECHAT_SECRET', '')
-    if not hasattr(app, "extensions"):
-        app.extensions = {}
-    app.extensions['wechat_client'] = WeChatClient(wechat_appid, wechat_secret)
+def get_embeddings_endpoint():
+    # 使用bge-large-zh进行向量化处理
+    return QianfanEmbeddingsEndpoint(model="bge-large-zh", qianfan_ak=config.QIANFAN_AK, qianfan_sk=config.QIANFAN_SK)
 
 class WechatGptHandlerResource(BaseResource):
     def get(self):
@@ -37,58 +35,64 @@ class WechatGptHandlerResource(BaseResource):
         res_cache_key = cache_key + "#res"
         # 检查q是否存在redis
         if not redis.exists(q_cache_key):
-            return make_response("回答已过期")
-        prompt = redis.get(q_cache_key).decode('utf-8')
+            return make_response({"answer": "回答已过期"})
+        question = redis.get(q_cache_key).decode('utf-8')
         current_res = redis.get(res_cache_key).decode('utf-8')
         if current_res == "":
-            current_res = self.ask_gpt(prompt)
+            current_res = self.ask_gpt(question)
         redis.set(res_cache_key, current_res)
-        return make_response(current_res)
+        return make_response(json.loads(current_res))
     
-    def ask_gpt(self, prompt):
-        # 设置OpenAI API的身份验证密钥
-        # openai_api_key = "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"
-        # 使用第三方的key
-        openai_api_key = 'sk-WV29GlBY9AYTluAqpBHPjJ4gTmakrePEZCzxzb1ZRl6z3C1e'
-        # 定义API的请求URL
-        #url = "https://api.openai.com/v1/completions"
-        # url = "https://openai.huiwan.tech/proxy/api.openai.com/v1/completions"
-        # 第三方的url
-        url = "https://api.chatanywhere.cn/v1/completions"
-        # 设置API请求头
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {openai_api_key}",
-        }
-        final_prompt = f"""
-        回答双引号中的问题,结果以markdown格式输出。问题是:"{prompt}"
-        """
-        # 设置API请求正文
-        data = {
-            "model": "text-davinci-003",
-            "prompt": final_prompt,
-            "max_tokens": 2048,
-            "temperature": 0.8,
-        }
+    def ask_gpt(self, question):
+        chain = self.build_qa_chain()
+        chain_response = chain({"query": question})
+        # 找不到相关答案
+        if chain_response.get("result", "NO_ANSWER") == "NO_ANSWER":
+            return json.dumps({
+                "answer": "公众号暂未有相关知识"
+            })
 
-        # 发送API请求
-        response = requests.post(url, headers=headers, json=data)
-
-        # 解析API响应
-        if response.status_code == 200:
-            response_json = response.json()
-            message = response_json["choices"][0]["text"].strip()
-            # 对返回的数据进行审核
-            if helper.baidu_aip_text(message):
-                return message
-            else:
-                return "不该问的别乱问哦"
-        else:
-            print(response.json())
-            return "哎呀，我没听清问题，你再问一下～"
+        answer = chain_response.get("result", "")
+        metadatas = []
+        for source_document in chain_response.get("source_documents", []):
+            metadatas.append(source_document.metadata)
+        return json.dumps({
+            "answer": answer,
+            "metadatas": metadatas
+        })
+    
+    def build_qa_chain(self):
+        llm = ChatOpenAI(model_name="gpt-3.5-turbo-0125", openai_api_base=config.OPENAI_API_BASE, openai_api_key=config.OPENAI_API_KEY)
+        vectorstore = Chroma(persist_directory=config.DB_STORE_DIR, embedding_function=get_embeddings_endpoint())
+        
+        # 构建提示词模版
+        system_template = """Use the following pieces of context to answer the user's question.
+        the answer are output in MARKDOWN format
+        If you cannot get the answer from the context, just RESPOND: NO_ANSWER, don't try to make up an answer.
+        ----------------
+        context:
+        {context}
+        ----------------"""
+        messages = [
+            SystemMessagePromptTemplate.from_template(system_template),
+            HumanMessagePromptTemplate.from_template("{question}"),
+        ]
+        chat_prompt = ChatPromptTemplate.from_messages(messages)
+        
+        return RetrievalQA.from_chain_type(
+            llm,
+            # 设定搜索结果数量并限制相似度阈值
+            retriever=vectorstore.as_retriever(search_type ="similarity_score_threshold", search_kwargs={"k": 3, "score_threshold": 0.7}),
+            return_source_documents=True,
+            chain_type_kwargs={"prompt": chat_prompt}
+        )
+        
+        
 class WechatHandlerResource(BaseResource):
     def handle_auto_reply(self, msg):
         content = msg.content.strip().lower()
+        if not content.startswith('@gpt'):
+            return create_reply('', msg)
         rsp_content = self.create_gpt_res(content)
         return create_reply(rsp_content, msg)
     
@@ -113,10 +117,9 @@ class WechatHandlerResource(BaseResource):
         msg_signature = request.args.get("msg_signature", "")
         
         try:
-            check_signature(WECHAT_TOKEN, signature, timestamp, nonce)
+            check_signature(config.WECHAT_TOKEN, signature, timestamp, nonce)
         except InvalidSignatureException:
             abort(403)
-
         resp_xml = ""
         # 明文模式
         if encrypt_type == "raw":
@@ -124,12 +127,12 @@ class WechatHandlerResource(BaseResource):
             msg = parse_message(request.data)
             if msg.type == "text":
                 reply = self.handle_auto_reply(msg)
-            resp_xml = reply.render()
+                resp_xml = reply.render()
         else:
             # 加密模式
             from wechatpy.crypto import WeChatCrypto
 
-            crypto = WeChatCrypto(WECHAT_TOKEN, WECHAT_AES_KEY, WECHAT_APPID)
+            crypto = WeChatCrypto(config.WECHAT_TOKEN, config.WECHAT_AES_KEY, '')
             try:
                 msg = crypto.decrypt_message(request.data, msg_signature, timestamp, nonce)
             except (InvalidSignatureException, InvalidAppIdException):
@@ -138,7 +141,7 @@ class WechatHandlerResource(BaseResource):
                 msg = parse_message(msg)
                 if msg.type == "text":
                     reply = self.handle_auto_reply(msg)
-                resp_xml = crypto.encrypt_message(reply.render(), nonce, timestamp)
+                    resp_xml = crypto.encrypt_message(reply.render(), nonce, timestamp)
         response = make_response(resp_xml)
         response.headers['content-type'] = 'text/plain;charset=UTF-8'
         return response
@@ -148,7 +151,74 @@ class WechatHandlerResource(BaseResource):
         signature = request.args.get("signature", "")
         timestamp = request.args.get("timestamp", "")
         nonce = request.args.get("nonce", "")
+        try:
+            check_signature(config.WECHAT_TOKEN, signature, timestamp, nonce)
+        except InvalidSignatureException:
+            abort(403)
         echo_str = request.args.get("echostr", "")
         response = make_response(echo_str)
         response.headers['content-type'] = 'text/plain'
         return response
+    
+    
+class WechatArticlePostResource(BaseResource):
+    def get(self):
+        return send_from_directory('static', 'post_wechat_article.html')
+    
+    def post(self):
+        article_url = request.get_json()['article_url']
+        # 解析微信文章内容
+        article_data = self.parse_article(article_url)
+        
+        if article_data is None:
+            return make_response("文章拉取失败", 404)
+        # 使用CharTextSplitter对内容进行分割 chunk_size = 1000; chunk_overlap = 300, 按句号分开
+        splitter = CharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=300,
+            separator='。'
+        )
+        docs = splitter.create_documents([article_data['content']], [{'title': article_data['title'], 'source': article_url}])
+        
+        # docs存入chroma向量数据库
+        self.store_docs(docs)
+        return make_response("文章添加成功")
+    
+    def parse_article(self, article_url):
+        from bs4 import BeautifulSoup
+        # 模拟头部，规避微信反爬策略
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36'
+        }
+        response = requests.get(article_url, headers=headers)
+        # 文章获取失败
+        if response.status_code != 200:
+            return None
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        # 获取文章标题
+        title = soup.find('h1', class_='rich_media_title').get_text(strip=True)
+        # 获取文章内容
+        content = soup.find('div', class_='rich_media_content').get_text()
+        article_data = {
+            'title': title,
+            'content': content
+        }
+        return article_data
+    
+    def store_docs(self, docs: list[Document]):
+        # page_content+source生成一个doc_id，避免重复存储
+        ids = []
+        for doc in docs:
+            doc_id = hashlib.md5(str(doc.page_content + doc.metadata['source']).encode('utf-8')).hexdigest()
+            ids.append(doc_id)
+        
+        
+        # 存入chroma向量数据库
+        Chroma.from_documents(
+            documents=docs,
+            embedding=get_embeddings_endpoint(), 
+            persist_directory=config.DB_STORE_DIR,
+            ids=ids
+        )
+        
